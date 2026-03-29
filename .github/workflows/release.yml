@@ -1,0 +1,73 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+            yt_dlp_url: https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos
+            yt_dlp_bin: resources/bin/yt-dlp
+            artifact: "dist/*.dmg"
+
+          - os: windows-latest
+            platform: win
+            yt_dlp_url: https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
+            yt_dlp_bin: resources/bin/yt-dlp.exe
+            artifact: "dist/*.exe"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Baixar yt-dlp
+        shell: bash
+        run: |
+          mkdir -p resources/bin
+          curl -L "${{ matrix.yt_dlp_url }}" -o "${{ matrix.yt_dlp_bin }}"
+          chmod +x "${{ matrix.yt_dlp_bin }}" || true
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Build
+        run: npm run dist -- --${{ matrix.platform }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar artefatos
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Criar Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
