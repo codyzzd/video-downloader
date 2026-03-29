@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+.env
+.env.local
+
+# binários bundlados — baixar via: curl .../yt-dlp_macos -o resources/bin/yt-dlp
+resources/bin/
+node_modules

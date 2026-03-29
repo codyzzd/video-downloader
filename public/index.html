@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Video Downloader</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f0f10;
+      --surface: #1a1a1c;
+      --border: #2a2a2e;
+      --text: #e8e8ea;
+      --muted: #666670;
+      --accent: #6c63ff;
+      --accent-hover: #7c74ff;
+      --danger: #ff4d4d;
+      --success: #3ecf8e;
+      --radius: 10px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 16px 80px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    header h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    header h1 span { color: var(--accent); }
+
+    header p {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      width: 100%;
+      max-width: 640px;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 0.95rem;
+      padding: 10px 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input[type="text"]::placeholder { color: var(--muted); }
+    input[type="text"]:focus { border-color: var(--accent); }
+
+    button.primary {
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      color: #fff;
+      cursor: pointer;
+      font-size: 0.9rem;
+      font-weight: 600;
+      padding: 10px 20px;
+      transition: background 0.2s, opacity 0.2s;
+      white-space: nowrap;
+    }
+
+    button.primary:hover { background: var(--accent-hover); }
+    button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Spinner */
+    .spinner-wrap {
+      display: none;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .spinner-wrap.visible { display: flex; }
+
+    .spinner {
+      width: 22px;
+      height: 22px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Erro */
+    .error-box {
+      display: none;
+      background: rgba(255,77,77,0.1);
+      border: 1px solid rgba(255,77,77,0.3);
+      border-radius: var(--radius);
+      color: var(--danger);
+      font-size: 0.875rem;
+      margin-top: 18px;
+      padding: 12px 16px;
+    }
+
+    .error-box.visible { display: block; }
+
+    /* Resultado */
+    .result {
+      display: none;
+      margin-top: 24px;
+    }
+
+    .result.visible { display: block; }
+
+    .video-info {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      margin-bottom: 20px;
+    }
+
+    .video-info img {
+      width: 140px;
+      border-radius: 6px;
+      object-fit: cover;
+      flex-shrink: 0;
+      border: 1px solid var(--border);
+    }
+
+    .video-info .meta h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      line-height: 1.4;
+      color: var(--text);
+    }
+
+    .video-info .meta p {
+      margin-top: 6px;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    .formats-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    .formats-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .fmt-btn {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 0.85rem;
+      padding: 8px 14px;
+      transition: border-color 0.2s, background 0.2s;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      min-width: 90px;
+    }
+
+    .fmt-btn:hover {
+      border-color: var(--accent);
+      background: rgba(108,99,255,0.08);
+    }
+
+    .fmt-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .fmt-btn .res {
+      font-weight: 700;
+      font-size: 1rem;
+    }
+
+    .fmt-btn .ext {
+      font-size: 0.7rem;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    .fmt-btn .size {
+      font-size: 0.7rem;
+      color: var(--muted);
+    }
+
+    .badge {
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-top: 2px;
+    }
+
+    .badge-audio {
+      background: rgba(62,207,142,0.15);
+      color: var(--success);
+      border: 1px solid rgba(62,207,142,0.3);
+    }
+
+    .badge-noaudio {
+      background: rgba(102,102,112,0.15);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+
+    .formats-section {
+      margin-bottom: 18px;
+    }
+
+    .formats-section-label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .formats-section-label.has-audio     { color: var(--success); }
+    .formats-section-label.no-audio      { color: var(--muted); }
+    .formats-section-label.unknown-audio { color: #f5a623; }
+
+    /* Painel de link */
+    .link-panel {
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 20px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+
+    .link-panel.visible { display: flex; }
+
+    .link-panel-title {
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .link-panel-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .btn-action {
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 9px 16px;
+      transition: opacity 0.15s, filter 0.15s;
+      white-space: nowrap;
+    }
+
+    .btn-action:hover { filter: brightness(1.1); }
+    .btn-action:active { filter: brightness(0.9); }
+
+    .btn-download {
+      background: var(--success);
+      color: #0a1a12;
+    }
+
+    .btn-open {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .link-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .link-text {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--muted);
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.72rem;
+      overflow: hidden;
+      padding: 8px 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      user-select: all;
+    }
+
+    .btn-copy {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 8px 14px;
+      transition: border-color 0.2s, color 0.2s;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .btn-copy:hover { border-color: var(--accent); color: var(--accent); }
+    .btn-copy.copied { border-color: var(--success); color: var(--success); }
+
+    /* Toast de progresso */
+    .toast {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 0.85rem;
+      margin-top: 16px;
+      padding: 10px 16px;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .toast.visible { display: flex; }
+    .toast .toast-spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0; }
+
+    footer {
+      margin-top: 40px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Video <span>Downloader</span></h1>
+    <p>YouTube · Instagram · TikTok · Facebook · LinkedIn · Threads · X</p>
+  </header>
+
+  <div class="card">
+    <div class="input-row">
+      <input type="text" id="urlInput" placeholder="Cole a URL do vídeo aqui..." autocomplete="off" />
+      <button class="primary" id="analyzeBtn" onclick="analyze()">Analisar</button>
+    </div>
+
+    <div class="spinner-wrap" id="spinner">
+      <div class="spinner"></div>
+      <span>Analisando vídeo...</span>
+    </div>
+
+    <div class="error-box" id="errorBox"></div>
+
+    <div class="result" id="result">
+      <div class="video-info" id="videoInfo"></div>
+      <div class="formats-label">Qualidades disponíveis</div>
+      <div id="formatsGrid"></div>
+      <div class="toast" id="toast">
+        <div class="toast-spinner"></div>
+        <span id="toastMsg">Obtendo link de download...</span>
+      </div>
+
+      <div class="link-panel" id="linkPanel">
+        <div class="link-panel-title">Link obtido</div>
+        <div class="link-panel-actions">
+          <button class="btn-action btn-download" id="btnDownload">⬇ Baixar</button>
+          <button class="btn-action btn-open" id="btnOpen">↗ Abrir no navegador</button>
+        </div>
+        <div class="link-row">
+          <div class="link-text" id="linkText"></div>
+          <button class="btn-copy" id="btnCopy" onclick="copyLink()">Copiar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>O download ocorre direto da plataforma para o seu dispositivo.</footer>
+
+  <script>
+    let currentUrl = '';
+
+    function fmtSize(bytes) {
+      if (!bytes) return '';
+      if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+      if (bytes >= 1e6) return (bytes / 1e6).toFixed(0) + ' MB';
+      return (bytes / 1e3).toFixed(0) + ' KB';
+    }
+
+    function setLoading(on) {
+      document.getElementById('spinner').classList.toggle('visible', on);
+      document.getElementById('analyzeBtn').disabled = on;
+      document.getElementById('urlInput').disabled = on;
+    }
+
+    function showError(msg) {
+      const box = document.getElementById('errorBox');
+      box.textContent = msg;
+      box.classList.add('visible');
+    }
+
+    function hideError() {
+      document.getElementById('errorBox').classList.remove('visible');
+    }
+
+    function hideResult() {
+      document.getElementById('result').classList.remove('visible');
+    }
+
+    async function analyze() {
+      const url = document.getElementById('urlInput').value.trim();
+      if (!url) return;
+
+      currentUrl = url;
+      hideError();
+      hideResult();
+      setLoading(true);
+
+      try {
+        const res = await fetch('/api/info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          showError(data.error || 'Erro ao analisar o vídeo.');
+          return;
+        }
+
+        renderResult(data);
+      } catch (e) {
+        showError('Erro de conexão com o servidor.');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function renderResult({ title, thumbnail, formats }) {
+      const infoEl = document.getElementById('videoInfo');
+      infoEl.innerHTML = `
+        ${thumbnail ? `<img src="${thumbnail}" alt="thumbnail" onerror="this.style.display='none'" />` : ''}
+        <div class="meta">
+          <h2>${escHtml(title)}</h2>
+          <p>${formats.length} formato(s) disponível(is)</p>
+        </div>
+      `;
+
+      const withAudio    = formats.filter(f => f.audioStatus === 'yes');
+      const unknownAudio = formats.filter(f => f.audioStatus === 'unknown');
+      const noAudio      = formats.filter(f => f.audioStatus === 'no');
+
+      const grid = document.getElementById('formatsGrid');
+      grid.innerHTML = '';
+
+      function renderSection(list, label, labelClass) {
+        if (list.length === 0) return;
+        const section = document.createElement('div');
+        section.className = 'formats-section';
+        const heading = document.createElement('div');
+        heading.className = `formats-section-label ${labelClass}`;
+        heading.textContent = label;
+        section.appendChild(heading);
+        const row = document.createElement('div');
+        row.className = 'formats-grid';
+        list.forEach(f => {
+          const btn = document.createElement('button');
+          btn.className = 'fmt-btn';
+          btn.innerHTML = `
+            <span class="res">${f.height ? f.height + 'p' : (f.label || 'Original')}</span>
+            <span class="ext">${f.ext}</span>
+            ${f.filesize ? `<span class="size">${fmtSize(f.filesize)}</span>` : ''}
+          `;
+          btn.onclick = () => f.directLink ? showLinkPanel(f.directLink) : download(f.format_id);
+          row.appendChild(btn);
+        });
+        section.appendChild(row);
+        grid.appendChild(section);
+      }
+
+      renderSection(withAudio,    '🔊 Com áudio', 'has-audio');
+      renderSection(unknownAudio, '❓ Áudio incerto — pode ter ou não', 'unknown-audio');
+      renderSection(noAudio,      '🔇 Sem áudio (somente vídeo)', 'no-audio');
+
+      document.getElementById('toast').classList.remove('visible');
+      document.getElementById('result').classList.add('visible');
+    }
+
+    async function download(formatId) {
+      const btns = document.querySelectorAll('.fmt-btn');
+      btns.forEach(b => b.disabled = true);
+
+      // esconde painel anterior
+      document.getElementById('linkPanel').classList.remove('visible');
+      hideError();
+
+      const toast = document.getElementById('toast');
+      document.getElementById('toastMsg').textContent = 'Obtendo link de download...';
+      toast.classList.add('visible');
+
+      try {
+        const res = await fetch('/api/get-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: currentUrl, format_id: formatId }),
+        });
+
+        const data = await res.json();
+        toast.classList.remove('visible');
+
+        if (!res.ok) {
+          showError(data.error || 'Erro ao obter link de download.');
+          return;
+        }
+
+        showLinkPanel(data.link);
+      } catch (e) {
+        toast.classList.remove('visible');
+        showError('Erro de conexão ao obter link.');
+      } finally {
+        btns.forEach(b => b.disabled = false);
+      }
+    }
+
+    function showLinkPanel(link) {
+      document.getElementById('linkText').textContent = link;
+
+      const btnDownload = document.getElementById('btnDownload');
+      const btnOpen = document.getElementById('btnOpen');
+
+      // clone para remover listeners anteriores
+      const newDown = btnDownload.cloneNode(true);
+      const newOpen = btnOpen.cloneNode(true);
+      btnDownload.replaceWith(newDown);
+      btnOpen.replaceWith(newOpen);
+
+      newDown.onclick = () => {
+        const a = document.createElement('a');
+        a.href = link;
+        a.download = '';
+        a.rel = 'noopener noreferrer';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      };
+
+      newOpen.onclick = () => {
+        window.open(link, '_blank', 'noopener,noreferrer');
+      };
+
+      document.getElementById('btnCopy').classList.remove('copied');
+      document.getElementById('linkPanel').classList.add('visible');
+
+      // scroll suave até o painel
+      document.getElementById('linkPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function copyLink() {
+      const text = document.getElementById('linkText').textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById('btnCopy');
+        btn.textContent = 'Copiado!';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = 'Copiar';
+          btn.classList.remove('copied');
+        }, 2000);
+      });
+    }
+
+    function escHtml(str) {
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // Enviar com Enter
+    document.getElementById('urlInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') analyze();
+    });
+  </script>
+
+</body>
+</html>

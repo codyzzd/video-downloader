@@ -1,0 +1,54 @@
+{
+  "name": "video-downloader",
+  "version": "1.0.0",
+  "description": "Extrai links diretos de vídeos via yt-dlp para download",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder"
+  },
+  "build": {
+    "appId": "com.alldown.video-downloader",
+    "productName": "Video Downloader",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bin/yt-dlp",
+        "to": "bin/yt-dlp"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis",
+      "extraResources": [
+        {
+          "from": "resources/bin/yt-dlp.exe",
+          "to": "bin/yt-dlp.exe"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.0.0",
+    "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "puppeteer-core": "^24.40.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}
