@@ -54,6 +54,10 @@ function isThreadsUrl(url) {
   return /threads\.(com|net)/i.test(url)
 }
 
+function isLinkedInUrl(url) {
+  return /linkedin\.com\/(posts|feed\/update)\//i.test(url)
+}
+
 function findChrome() {
   const candidates = process.platform === 'win32'
     ? [
@@ -66,6 +70,101 @@ function findChrome() {
         '/Applications/Chromium.app/Contents/MacOS/Chromium',
       ]
   return candidates.find(p => existsSync(p)) || null
+}
+
+// Pasta de dados do Chrome por plataforma
+function getChromeUserDataDir() {
+  if (process.platform === 'darwin') return join(process.env.HOME, 'Library', 'Application Support', 'Google', 'Chrome')
+  if (process.platform === 'win32') return join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'User Data')
+  return join(process.env.HOME, '.config', 'google-chrome')
+}
+
+async function extractLinkedInUrl(url) {
+  const chromePath = findChrome()
+  if (!chromePath) throw new Error('Google Chrome não encontrado. Necessário para baixar do LinkedIn.')
+
+  const puppeteer = await import('puppeteer-core')
+
+  // Tenta abrir com o perfil real do Chrome (tem cookies de login)
+  // Se o Chrome estiver aberto e travar, cai no fallback sem perfil
+  let browser
+  try {
+    browser = await puppeteer.default.launch({
+      executablePath: chromePath,
+      headless: true,
+      userDataDir: getChromeUserDataDir(),
+      args: [
+        '--profile-directory=Default',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-extensions',
+        '--disable-sync',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+      ],
+    })
+  } catch {
+    // Fallback: sem perfil (não terá login, mas tenta mesmo assim)
+    browser = await puppeteer.default.launch({
+      executablePath: chromePath,
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    })
+  }
+
+  try {
+    const page = await browser.newPage()
+    let videoUrl = null
+
+    await page.setRequestInterception(true)
+    page.on('request', req => {
+      const u = req.url()
+      // CDN de vídeos do LinkedIn: dms.licdn.com ou media.licdn.com
+      if (!videoUrl && (
+        (u.includes('dms.licdn.com') && (u.includes('.mp4') || u.includes('.m3u8') || u.includes('/vid/'))) ||
+        (u.includes('media.licdn.com') && (u.includes('video') || u.includes('.mp4')))
+      )) {
+        videoUrl = u
+      }
+      req.continue()
+    })
+
+    page.on('response', async resp => {
+      const u = resp.url()
+      const ct = resp.headers()['content-type'] || ''
+      if (!videoUrl && (u.includes('dms.licdn.com') || u.includes('media.licdn.com')) &&
+          (ct.includes('video/') || u.includes('.mp4'))) {
+        videoUrl = u
+      }
+    })
+
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 })
+
+    try { await page.waitForSelector('video', { timeout: 20000 }) } catch {}
+
+    // Aguarda requisições lazy adicionais
+    await new Promise(r => setTimeout(r, 3000))
+
+    // Tenta pegar src do elemento <video> diretamente
+    if (!videoUrl) {
+      videoUrl = await page.evaluate(() => {
+        const v = document.querySelector('video[src]') || document.querySelector('video source[src]')
+        return v ? v.src || v.getAttribute('src') : null
+      })
+    }
+
+    const finalUrl = page.url()
+    if (!videoUrl && (finalUrl.includes('/login') || finalUrl.includes('/checkpoint'))) {
+      throw new Error('LinkedIn redirecionou para login. Verifique se está logado no Google Chrome.')
+    }
+
+    if (!videoUrl) throw new Error('Nenhum vídeo encontrado nesta publicação do LinkedIn. O post pode ser privado ou sem vídeo.')
+
+    return videoUrl
+  } finally {
+    await browser.close()
+  }
 }
 
 async function extractThreadsUrl(url) {
@@ -269,18 +368,27 @@ ipcMain.handle('download:video', async (event, { id, url, maxQuality, folder }) 
   const safeUrl = url.trim()
   let downloadUrl = safeUrl
 
-  // Threads: extrai URL direta via Puppeteer
+  const send = (channel, data) => { try { event.sender.send(channel, data) } catch {} }
+
+  // Threads / LinkedIn: o yt-dlp não consegue renderizar JS — usa Puppeteer
   if (isThreadsUrl(safeUrl)) {
     try {
       downloadUrl = await extractThreadsUrl(safeUrl)
     } catch (err) {
-      try { event.sender.send('download:error', { id, error: err.message }) } catch {}
+      send('download:error', { id, error: err.message })
+      return { success: false }
+    }
+  } else if (isLinkedInUrl(safeUrl)) {
+    try {
+      send('download:progress', { id, percent: 0, title: 'Carregando LinkedIn…', speed: '', eta: '' })
+      downloadUrl = await extractLinkedInUrl(safeUrl)
+    } catch (err) {
+      send('download:error', { id, error: err.message })
       return { success: false }
     }
   }
 
   const formatStr = buildFormatStr(maxQuality)
-  const send = (channel, data) => { try { event.sender.send(channel, data) } catch {} }
 
   // Loop de auto-renomeação: tenta "Título.mp4", "Título (1).mp4", "Título (2).mp4"...
   for (let attempt = 0; attempt <= 99; attempt++) {

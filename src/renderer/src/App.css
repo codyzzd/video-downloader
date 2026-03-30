@@ -368,6 +368,15 @@ body {
   white-space: nowrap;
 }
 
+/* Erros mostram o texto completo, sem truncar */
+.qi-sub:has(.qi-errmsg) {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
 .qi-filepath {
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 0.68rem;
