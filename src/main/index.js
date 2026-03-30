@@ -1,25 +1,22 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { join } from 'path'
-import { exec } from 'child_process'
-import { promisify } from 'util'
+import { spawn } from 'child_process'
+import { readFileSync, writeFileSync, existsSync } from 'fs'
 
-const execAsync = promisify(exec)
+// ─── Cookies ──────────────────────────────────────────────────────────────────
 
-// Cookies do Chrome para plataformas que exigem login (ex: Instagram)
-const COOKIES_FLAG = process.platform === 'darwin'
-  ? '--cookies-from-browser "chrome:Default"'
+const COOKIES_ARGS = process.platform === 'darwin'
+  ? ['--cookies-from-browser', 'chrome:Default']
   : process.platform === 'win32'
-    ? '--cookies-from-browser chrome'
-    : ''
+    ? ['--cookies-from-browser', 'chrome']
+    : []
 
-// Quando empacotado, usa o binário bundlado em Resources/bin/yt-dlp.
-// Em dev, cai no yt-dlp do sistema (precisa estar no PATH).
+// ─── yt-dlp ───────────────────────────────────────────────────────────────────
+
 const YT_DLP = app.isPackaged
-  ? join(process.resourcesPath, 'bin', 'yt-dlp')
+  ? join(process.resourcesPath, 'bin', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp')
   : 'yt-dlp'
 
-// Apps empacotados no macOS não herdam o PATH do terminal.
-// Inclui os diretórios mais comuns como fallback (para o modo dev).
 const EXEC_ENV = {
   ...process.env,
   PATH: [
@@ -32,7 +29,31 @@ const EXEC_ENV = {
   ].join(':'),
 }
 
-// Detecta o Chrome instalado no sistema (macOS e Windows)
+// ─── Settings ─────────────────────────────────────────────────────────────────
+
+function getSettingsPath() {
+  return join(app.getPath('userData'), 'settings.json')
+}
+
+function loadSettings() {
+  try {
+    if (existsSync(getSettingsPath())) {
+      return JSON.parse(readFileSync(getSettingsPath(), 'utf8'))
+    }
+  } catch {}
+  return { folder: app.getPath('downloads'), maxQuality: 1080 }
+}
+
+function saveSettings(data) {
+  writeFileSync(getSettingsPath(), JSON.stringify(data, null, 2))
+}
+
+// ─── Threads extractor ────────────────────────────────────────────────────────
+
+function isThreadsUrl(url) {
+  return /threads\.(com|net)/i.test(url)
+}
+
 function findChrome() {
   const candidates = process.platform === 'win32'
     ? [
@@ -44,26 +65,14 @@ function findChrome() {
         '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
         '/Applications/Chromium.app/Contents/MacOS/Chromium',
       ]
-
-  const { existsSync } = require('fs')
   return candidates.find(p => existsSync(p)) || null
 }
 
-function isThreadsUrl(url) {
-  return /threads\.(com|net)/i.test(url)
-}
-
-async function extractThreads(url) {
+async function extractThreadsUrl(url) {
   const chromePath = findChrome()
-  if (!chromePath) {
-    throw new Error(
-      'Para baixar vídeos do Threads é necessário ter o Google Chrome instalado.\n' +
-      'Baixe em: https://www.google.com/chrome'
-    )
-  }
+  if (!chromePath) throw new Error('Google Chrome não encontrado. Necessário para baixar do Threads.')
 
   const puppeteer = await import('puppeteer-core')
-
   const browser = await puppeteer.default.launch({
     executablePath: chromePath,
     headless: true,
@@ -72,10 +81,7 @@ async function extractThreads(url) {
 
   try {
     const page = await browser.newPage()
-
     let videoUrl = null
-    let thumbnail = null
-    let title = 'Threads'
 
     await page.setRequestInterception(true)
     page.on('request', req => {
@@ -85,7 +91,6 @@ async function extractThreads(url) {
       }
       req.continue()
     })
-
     page.on('response', async resp => {
       const u = resp.url()
       if (!videoUrl && (u.includes('cdninstagram.com') || u.includes('fbcdn.net')) && u.includes('.mp4')) {
@@ -94,10 +99,7 @@ async function extractThreads(url) {
     })
 
     await page.goto(url, { waitUntil: 'load', timeout: 60000 })
-
-    try {
-      await page.waitForSelector('video', { timeout: 15000 })
-    } catch (_) { /* sem video no DOM */ }
+    try { await page.waitForSelector('video', { timeout: 15000 }) } catch {}
 
     if (!videoUrl) {
       videoUrl = await page.evaluate(() => {
@@ -106,51 +108,25 @@ async function extractThreads(url) {
       })
     }
 
-    const finalUrl = page.url()
-    if (!videoUrl && (finalUrl.includes('/login') || finalUrl.includes('/accounts/login'))) {
-      throw new Error('O Threads redirecionou para login. Esta publicação pode ser privada ou requer autenticação.')
-    }
-
-    title = await page.evaluate(() => {
-      const m = document.querySelector('meta[property="og:title"]') ||
-                document.querySelector('meta[name="title"]')
-      return m ? m.content : document.title || 'Threads'
-    })
-
-    thumbnail = await page.evaluate(() => {
-      const m = document.querySelector('meta[property="og:image"]')
-      return m ? m.content : null
-    })
-
     if (!videoUrl) throw new Error('Nenhum vídeo encontrado nesta publicação do Threads.')
-
-    return {
-      title,
-      thumbnail,
-      formats: [{
-        format_id: 'threads_direct',
-        height: null,
-        ext: 'mp4',
-        filesize: null,
-        tbr: null,
-        audioStatus: 'yes',
-        hasAudio: true,
-        hasVideo: true,
-        directLink: videoUrl,
-        label: 'Original',
-      }],
-    }
+    return videoUrl
   } finally {
     await browser.close()
   }
 }
 
-// ─── Janela principal ────────────────────────────────────────────────────────
+// ─── Active downloads ─────────────────────────────────────────────────────────
+
+const activeDownloads = new Map()
+
+// ─── Window ───────────────────────────────────────────────────────────────────
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 900,
-    height: 680,
+    width: 860,
+    height: 660,
+    minWidth: 640,
+    minHeight: 480,
     titleBarStyle: 'hiddenInset',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -159,7 +135,6 @@ function createWindow() {
     },
   })
 
-  // Em dev o electron-vite injeta ELECTRON_RENDERER_URL
   if (process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
     win.webContents.openDevTools()
@@ -169,182 +144,132 @@ function createWindow() {
 }
 
 app.whenReady().then(createWindow)
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+app.on('before-quit', () => {
+  for (const [, proc] of activeDownloads) proc.kill()
+  activeDownloads.clear()
 })
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow()
+// ─── IPC: Settings ────────────────────────────────────────────────────────────
+
+ipcMain.handle('settings:get', () => loadSettings())
+ipcMain.handle('settings:set', (_, data) => { saveSettings(data); return true })
+
+// ─── IPC: Dialog ──────────────────────────────────────────────────────────────
+
+ipcMain.handle('dialog:choose-folder', async () => {
+  const { filePaths } = await dialog.showOpenDialog({
+    properties: ['openDirectory'],
+    title: 'Escolher pasta de downloads',
+  })
+  return filePaths?.[0] || null
 })
 
-// ─── IPC: api:get-info ────────────────────────────────────────────────────────
+// ─── IPC: Download ────────────────────────────────────────────────────────────
 
-ipcMain.handle('api:get-info', async (_, url) => {
+ipcMain.handle('download:video', async (event, { id, url, maxQuality, folder }) => {
   const safeUrl = url.trim()
+  let downloadUrl = safeUrl
 
+  // Threads: extract direct URL via Puppeteer
   if (isThreadsUrl(safeUrl)) {
-    return await extractThreads(safeUrl)
-  }
-
-  let stdout, stderr
-  try {
-    ;({ stdout, stderr } = await execAsync(`"${YT_DLP}" ${COOKIES_FLAG} --dump-json "${safeUrl}"`, { maxBuffer: 10 * 1024 * 1024, env: EXEC_ENV }))
-  } catch (err) {
-    const raw = (err.stderr || err.message || '').trim()
-    let msg = raw
-    if (raw.includes('Unsupported URL') || raw.includes('generic information extractor')) {
-      msg = 'URL não suportada. Plataformas aceitas: YouTube, Instagram, Facebook, LinkedIn, X e Threads.'
-    } else if (raw.includes('Video unavailable')) {
-      msg = 'Vídeo indisponível ou privado.'
-    } else if (raw.includes('Sign in') || raw.includes('login')) {
-      msg = 'Este vídeo requer login. Tente uma URL pública.'
+    try {
+      downloadUrl = await extractThreadsUrl(safeUrl)
+    } catch (err) {
+      try { event.sender.send('download:error', { id, error: err.message }) } catch {}
+      return { success: false }
     }
-    throw new Error(msg)
   }
 
-  let data
-  try {
-    data = JSON.parse(stdout)
-  } catch {
-    throw new Error('Não foi possível parsear a resposta do yt-dlp.')
-  }
+  // Format: best video up to maxQuality + audio, fallback to best available
+  const formatStr = [
+    `bestvideo[height<=${maxQuality}][ext=mp4]+bestaudio[ext=m4a]`,
+    `bestvideo[height<=${maxQuality}]+bestaudio`,
+    `best[height<=${maxQuality}]`,
+    'best',
+  ].join('/')
 
-  const title = data.title || 'Sem título'
-  const thumbnail = data.thumbnail || null
-  const rawFormats = data.formats || []
+  const args = [
+    ...COOKIES_ARGS,
+    '-f', formatStr,
+    '--merge-output-format', 'mp4',
+    '--newline',
+    '--no-playlist',
+    '-o', join(folder, '%(title)s.%(ext)s'),
+    downloadUrl,
+  ]
 
-  const rootHeight = data.height || null
+  return new Promise((resolve) => {
+    const proc = spawn(YT_DLP, args, { env: EXEC_ENV })
+    activeDownloads.set(id, proc)
 
-  const seen = new Set()
-  const formats = rawFormats
-    .filter(f => {
-      const height = f.height || rootHeight
-      const ext = f.ext || f.video_ext
-      return ext && ['mp4', 'webm', 'mkv', 'mov'].includes(ext)
+    let outFilePath = null
+    let title = null
+    let stderrBuf = ''
+
+    const send = (channel, data) => {
+      try { event.sender.send(channel, data) } catch {}
+    }
+
+    proc.stdout.on('data', (chunk) => {
+      for (const line of chunk.toString().split('\n')) {
+        // Destination line → extract title
+        const dest = line.match(/\[download\] Destination:\s+(.+)/)
+        if (dest) {
+          outFilePath = dest[1].trim()
+          const fname = outFilePath.replace(/\\/g, '/').split('/').pop()
+          title = fname.replace(/\.[^.]+$/, '')
+          send('download:progress', { id, percent: 0, title, speed: '', eta: '' })
+        }
+
+        // Progress line: [download]  45.3% of 123.45MiB at 2.50MiB/s ETA 00:20
+        const prog = line.match(/\[download\]\s+([\d.]+)%\s+of\s+\S+\s+at\s+(\S+)\s+ETA\s+(\S+)/)
+        if (prog) {
+          send('download:progress', {
+            id,
+            percent: parseFloat(prog[1]),
+            speed: prog[2],
+            eta: prog[3],
+            title,
+          })
+        }
+
+        // Merger line → final merged file path
+        const merge = line.match(/Merging formats into "(.+)"/)
+        if (merge) outFilePath = merge[1].trim()
+      }
     })
-    .map(f => {
-      f = { ...f, height: f.height || rootHeight, ext: f.ext || f.video_ext }
 
-      const hasAudioChannels = f.audio_channels && f.audio_channels > 0
-      const hasAbr = f.abr && f.abr > 0
-      const acodecDeclared = f.acodec && f.acodec !== 'none'
-      const acodecAbsent = !f.acodec || f.acodec === 'none'
+    proc.stderr.on('data', (chunk) => { stderrBuf += chunk.toString() })
 
-      let audioStatus
-      if (hasAudioChannels || hasAbr || acodecDeclared) {
-        audioStatus = 'yes'
-      } else if (acodecAbsent && (hasAudioChannels === false || f.audio_channels === 0)) {
-        audioStatus = 'no'
-      } else if (acodecAbsent && !hasAudioChannels && !hasAbr) {
-        audioStatus = 'unknown'
+    proc.on('close', (code) => {
+      activeDownloads.delete(id)
+      if (code === 0) {
+        send('download:done', { id, filePath: outFilePath, title })
       } else {
-        audioStatus = 'no'
+        const lines = stderrBuf.trim().split('\n').filter(Boolean)
+        const errMsg = lines.find(l => l.includes('ERROR:'))?.replace(/^.*ERROR:\s*/, '') || 'Erro no download.'
+        send('download:error', { id, error: errMsg })
       }
-
-      const hasVideo = f.vcodec && f.vcodec !== 'none'
-      return {
-        format_id: f.format_id,
-        height: f.height,
-        ext: f.ext,
-        filesize: f.filesize || f.filesize_approx || null,
-        tbr: f.tbr || null,
-        audioStatus,
-        hasAudio: audioStatus === 'yes',
-        hasVideo,
-      }
-    })
-    .filter(f => {
-      const key = `${f.height}-${f.ext}-${f.audioStatus}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-    .sort((a, b) => {
-      if (b.height !== a.height) return b.height - a.height
-      const order = { yes: 2, unknown: 1, no: 0 }
-      return (order[b.audioStatus] || 0) - (order[a.audioStatus] || 0)
+      resolve({ success: code === 0 })
     })
 
-  if (formats.length === 0) {
-    throw new Error('Nenhum formato de vídeo disponível para esta URL.')
-  }
-
-  // Se há formatos sem áudio (DASH), oferece opção de download mesclado (vídeo+áudio)
-  const hasDashVideoOnly = formats.some(f => f.hasVideo && f.audioStatus === 'no')
-  if (hasDashVideoOnly) {
-    const maxHeight = Math.max(...formats.filter(f => f.height).map(f => f.height), 0) || null
-    formats.unshift({
-      format_id: '__merged__',
-      height: maxHeight,
-      ext: 'mp4',
-      filesize: null,
-      tbr: null,
-      audioStatus: 'yes',
-      hasAudio: true,
-      hasVideo: true,
-      label: 'Melhor qualidade',
-      isMerged: true,
+    proc.on('error', (err) => {
+      activeDownloads.delete(id)
+      send('download:error', { id, error: err.message })
+      resolve({ success: false })
     })
-  }
-
-  return { title, thumbnail, formats }
-})
-
-// ─── IPC: api:get-link ────────────────────────────────────────────────────────
-
-ipcMain.handle('api:get-link', async (_, url, formatId) => {
-  const safeUrl = url.trim()
-
-  if (isThreadsUrl(safeUrl) && formatId === 'threads_direct') {
-    const data = await extractThreads(safeUrl)
-    return { link: data.formats[0].directLink }
-  }
-
-  const safeFormatId = String(formatId).replace(/[^a-zA-Z0-9_+\-]/g, '')
-
-  let stdout
-  try {
-    ;({ stdout } = await execAsync(`"${YT_DLP}" ${COOKIES_FLAG} --get-url -f "${safeFormatId}" "${safeUrl}"`, { env: EXEC_ENV }))
-  } catch (err) {
-    throw new Error((err.stderr || err.message || 'Erro ao obter link de download.').trim())
-  }
-
-  const link = stdout.trim()
-  if (!link) throw new Error('Link direto não encontrado para este formato.')
-
-  return { link }
-})
-
-// ─── IPC: download:merged — baixa vídeo+áudio mesclados via yt-dlp ──────────
-
-ipcMain.handle('download:merged', async (_, url) => {
-  const safeUrl = url.trim()
-
-  const { filePath } = await dialog.showSaveDialog({
-    title: 'Salvar vídeo',
-    defaultPath: join(app.getPath('downloads'), 'video.mp4'),
-    filters: [{ name: 'Vídeo MP4', extensions: ['mp4'] }],
   })
-
-  if (!filePath) return { cancelled: true }
-
-  await execAsync(
-    `"${YT_DLP}" ${COOKIES_FLAG} -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best" --merge-output-format mp4 -o "${filePath}" "${safeUrl}"`,
-    { env: EXEC_ENV, maxBuffer: 10 * 1024 * 1024 }
-  ).catch(err => {
-    throw new Error((err.stderr || err.message || 'Erro ao baixar vídeo.').trim())
-  })
-
-  return { success: true, filePath }
 })
 
-// ─── IPC: utilitários ─────────────────────────────────────────────────────────
-
-ipcMain.handle('shell:open-external', (_, url) => {
-  shell.openExternal(url)
+ipcMain.handle('download:cancel', (_, id) => {
+  const proc = activeDownloads.get(id)
+  if (proc) { proc.kill(); activeDownloads.delete(id) }
+  return true
 })
 
-ipcMain.handle('download:start', (event, url) => {
-  event.sender.downloadURL(url)
-})
+// ─── IPC: Shell ───────────────────────────────────────────────────────────────
+
+ipcMain.handle('shell:open-external', (_, url) => shell.openExternal(url))
+ipcMain.handle('shell:show-in-folder', (_, filePath) => shell.showItemInFolder(filePath))

@@ -1,237 +1,298 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
-function fmtSize(bytes) {
-  if (!bytes) return ''
-  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB'
-  if (bytes >= 1e6) return (bytes / 1e6).toFixed(0) + ' MB'
-  return (bytes / 1e3).toFixed(0) + ' KB'
-}
+const QUALITY_OPTIONS = [
+  { label: '4K — 2160p',      value: 2160 },
+  { label: '1440p',            value: 1440 },
+  { label: 'Full HD — 1080p', value: 1080 },
+  { label: 'HD — 720p',       value: 720  },
+  { label: '480p',             value: 480  },
+  { label: '360p',             value: 360  },
+]
+
+let idSeq = 1
 
 export default function App() {
-  const [url, setUrl] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [result, setResult] = useState(null)
-  const [linkLoading, setLinkLoading] = useState(false)
-  const [link, setLink] = useState('')
-  const [copied, setCopied] = useState(false)
-  const [mergeState, setMergeState] = useState(null) // null | 'downloading' | { filePath } | { error }
+  const [settings,  setSettings]  = useState({ folder: '', maxQuality: 1080 })
+  const [urlInput,  setUrlInput]  = useState('')
+  const [queue,     setQueue]     = useState([])
+  const startingRef = useRef(new Set())
 
-  async function analyze() {
-    if (!url.trim()) return
-    setError('')
-    setResult(null)
-    setLink('')
-    setMergeState(null)
-    setLoading(true)
-    try {
-      const data = await window.api.getInfo(url.trim())
-      setResult(data)
-    } catch (e) {
-      setError(e.message || 'Erro ao analisar o vídeo.')
-    } finally {
-      setLoading(false)
-    }
-  }
+  // ── Init ──────────────────────────────────────────────────────────────────
 
-  async function selectFormat(formatId, directLink) {
-    setError('')
-    setLink('')
-    setMergeState(null)
+  useEffect(() => {
+    window.api.getSettings().then(s => setSettings(s))
 
-    // Formato mesclado: baixa direto para o disco via yt-dlp
-    if (formatId === '__merged__') {
-      setMergeState('downloading')
-      try {
-        const res = await window.api.downloadMerged(url.trim())
-        if (res?.cancelled) {
-          setMergeState(null)
-        } else {
-          setMergeState({ filePath: res.filePath })
-        }
-      } catch (e) {
-        setMergeState({ error: e.message || 'Erro ao baixar vídeo.' })
-      }
-      return
-    }
-
-    if (directLink) {
-      setLink(directLink)
-      return
-    }
-    setLinkLoading(true)
-    try {
-      const data = await window.api.getLink(url.trim(), formatId)
-      setLink(data.link)
-    } catch (e) {
-      setError(e.message || 'Erro ao obter link de download.')
-    } finally {
-      setLinkLoading(false)
-    }
-  }
-
-  function copyLink() {
-    navigator.clipboard.writeText(link).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+    window.api.onDownloadProgress(({ id, percent, speed, eta, title }) => {
+      setQueue(q => q.map(item =>
+        item.id === id
+          ? { ...item, percent, speed: speed || item.speed, eta: eta || item.eta, title: title || item.title }
+          : item
+      ))
     })
+
+    window.api.onDownloadDone(({ id, filePath, title }) => {
+      startingRef.current.delete(id)
+      setQueue(q => q.map(item =>
+        item.id === id
+          ? { ...item, status: 'done', percent: 100, filePath, title: title || item.title }
+          : item
+      ))
+    })
+
+    window.api.onDownloadError(({ id, error }) => {
+      startingRef.current.delete(id)
+      setQueue(q => q.map(item =>
+        item.id === id ? { ...item, status: 'error', error } : item
+      ))
+    })
+
+    return () => window.api.offDownloadEvents()
+  }, [])
+
+  // ── Queue processor (1 download at a time) ────────────────────────────────
+
+  useEffect(() => {
+    const downloading = queue.filter(i => i.status === 'downloading').length
+    if (downloading >= 1) return
+
+    const next = queue.find(i => i.status === 'pending' && !startingRef.current.has(i.id))
+    if (!next) return
+
+    startingRef.current.add(next.id)
+    setQueue(q => q.map(i => i.id === next.id ? { ...i, status: 'downloading' } : i))
+
+    window.api.downloadVideo({
+      id: next.id,
+      url: next.url,
+      maxQuality: settings.maxQuality,
+      folder: settings.folder,
+    }).catch(() => { startingRef.current.delete(next.id) })
+  }, [queue, settings])
+
+  // ── Handlers ──────────────────────────────────────────────────────────────
+
+  async function handleChooseFolder() {
+    const folder = await window.api.chooseFolder()
+    if (folder) {
+      const next = { ...settings, folder }
+      setSettings(next)
+      window.api.setSettings(next)
+    }
   }
+
+  function handleQualityChange(e) {
+    const next = { ...settings, maxQuality: parseInt(e.target.value) }
+    setSettings(next)
+    window.api.setSettings(next)
+  }
+
+  function handleAddToQueue() {
+    const urls = urlInput
+      .split('\n')
+      .map(u => u.trim())
+      .filter(u => u.startsWith('http'))
+
+    if (!urls.length || !settings.folder) return
+
+    const newItems = urls.map(url => ({
+      id: idSeq++,
+      url,
+      status: 'pending',
+      percent: 0,
+      speed: '',
+      eta: '',
+      title: null,
+      filePath: null,
+      error: null,
+    }))
+
+    setQueue(q => [...q, ...newItems])
+    setUrlInput('')
+  }
+
+  async function handleCancelOrRemove(item) {
+    if (item.status === 'downloading') {
+      await window.api.cancelDownload(item.id)
+      startingRef.current.delete(item.id)
+    }
+    setQueue(q => q.filter(i => i.id !== item.id))
+  }
+
+  function handleClearFinished() {
+    setQueue(q => q.filter(i => i.status === 'pending' || i.status === 'downloading'))
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  function domain(url) {
+    try { return new URL(url).hostname.replace('www.', '') } catch { return url }
+  }
+
+  const hasDone = queue.some(i => i.status === 'done' || i.status === 'error')
+  const stats = {
+    pending:     queue.filter(i => i.status === 'pending').length,
+    downloading: queue.filter(i => i.status === 'downloading').length,
+    done:        queue.filter(i => i.status === 'done').length,
+    error:       queue.filter(i => i.status === 'error').length,
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="app">
-      <header>
+
+      {/* Header */}
+      <header className="app-header">
         <h1>Video <span>Downloader</span></h1>
-        <p>YouTube · Instagram · TikTok · Facebook · LinkedIn · Threads · X</p>
+        <p className="app-subtitle">YouTube · Instagram · TikTok · Facebook · X · Threads</p>
       </header>
 
-      <div className="card">
-        <div className="input-row">
-          <input
-            type="text"
-            value={url}
-            onChange={e => setUrl(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && analyze()}
-            placeholder="Cole a URL do vídeo aqui..."
-            disabled={loading}
-            autoComplete="off"
-          />
-          <button className="primary" onClick={analyze} disabled={loading || !url.trim()}>
-            Analisar
+      {/* Settings bar */}
+      <div className="settings-bar">
+        <button className="folder-btn" onClick={handleChooseFolder} title="Escolher pasta">
+          <span className="folder-icon">📁</span>
+          <span className="folder-path">{settings.folder || 'Escolher pasta de destino…'}</span>
+        </button>
+        <select
+          className="quality-select"
+          value={settings.maxQuality}
+          onChange={handleQualityChange}
+          title="Qualidade máxima"
+        >
+          {QUALITY_OPTIONS.map(o => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* URL Input */}
+      <div className="input-section">
+        <textarea
+          className="url-textarea"
+          value={urlInput}
+          onChange={e => setUrlInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleAddToQueue() }}
+          placeholder={'Cole uma ou mais URLs aqui (uma por linha)\nhttps://youtube.com/watch?v=...\nhttps://instagram.com/reel/...'}
+          rows={3}
+        />
+        <div className="input-actions">
+          <button
+            className="btn-add"
+            onClick={handleAddToQueue}
+            disabled={!urlInput.trim() || !settings.folder}
+          >
+            ⬇ Adicionar à fila
           </button>
+          {!settings.folder && (
+            <span className="hint-inline">← Escolha uma pasta primeiro</span>
+          )}
+          {hasDone && (
+            <button className="btn-clear" onClick={handleClearFinished}>
+              Limpar concluídos
+            </button>
+          )}
         </div>
+      </div>
 
-        {loading && (
-          <div className="spinner-wrap">
-            <div className="spinner" />
-            <span>Analisando vídeo...</span>
-          </div>
-        )}
-
-        {error && <div className="error-box">{error}</div>}
-
-        {result && (
-          <div className="result">
-            <div className="video-info">
-              {result.thumbnail && (
-                <img
-                  src={result.thumbnail}
-                  alt="thumbnail"
-                  onError={e => { e.currentTarget.style.display = 'none' }}
-                />
-              )}
-              <div className="meta">
-                <h2>{result.title}</h2>
-                <p>{result.formats.length} formato(s) disponível(is)</p>
+      {/* Queue */}
+      <div className="queue-section">
+        {queue.length > 0 ? (
+          <>
+            <div className="queue-header">
+              <span className="queue-label">Fila</span>
+              <div className="queue-stats">
+                {stats.downloading > 0 && <span className="stat stat-active">⬇ {stats.downloading}</span>}
+                {stats.pending > 0     && <span className="stat stat-pending">⏳ {stats.pending}</span>}
+                {stats.done > 0        && <span className="stat stat-done">✓ {stats.done}</span>}
+                {stats.error > 0       && <span className="stat stat-error">✕ {stats.error}</span>}
               </div>
             </div>
-
-            <FormatGroups formats={result.formats} onSelect={selectFormat} />
-
-            {linkLoading && (
-              <div className="toast">
-                <div className="toast-spinner" />
-                <span>Obtendo link de download...</span>
-              </div>
-            )}
-
-            {mergeState === 'downloading' && (
-              <div className="toast">
-                <div className="toast-spinner" />
-                <span>Baixando vídeo com áudio… pode demorar alguns segundos.</span>
-              </div>
-            )}
-
-            {mergeState?.filePath && (
-              <div className="link-panel">
-                <div className="link-panel-title">Download concluído</div>
-                <div className="link-panel-actions">
-                  <button
-                    className="btn-action btn-open"
-                    onClick={() => window.api.openExternal('file://' + mergeState.filePath.replace(/\\/g, '/'))}
-                  >
-                    ▶ Abrir arquivo
-                  </button>
-                </div>
-                <div className="link-row">
-                  <div className="link-text">{mergeState.filePath}</div>
-                </div>
-              </div>
-            )}
-
-            {mergeState?.error && (
-              <div className="error-box">{mergeState.error}</div>
-            )}
-
-            {link && (
-              <div className="link-panel">
-                <div className="link-panel-title">Link obtido</div>
-                <div className="link-panel-actions">
-                  <button
-                    className="btn-action btn-download"
-                    onClick={() => window.api.downloadStart(link)}
-                  >
-                    ⬇ Baixar
-                  </button>
-                  <button
-                    className="btn-action btn-open"
-                    onClick={() => window.api.openExternal(link)}
-                  >
-                    ↗ Abrir no navegador
-                  </button>
-                </div>
-                <div className="link-row">
-                  <div className="link-text">{link}</div>
-                  <button
-                    className={`btn-copy${copied ? ' copied' : ''}`}
-                    onClick={copyLink}
-                  >
-                    {copied ? 'Copiado!' : 'Copiar'}
-                  </button>
-                </div>
-              </div>
-            )}
+            <div className="queue-list">
+              {queue.map(item => (
+                <QueueItem
+                  key={item.id}
+                  item={item}
+                  displayName={item.title || domain(item.url)}
+                  onCancel={() => handleCancelOrRemove(item)}
+                  onShow={() => window.api.showInFolder(item.filePath)}
+                />
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="empty-state">
+            <div className="empty-icon">⬇</div>
+            <p className="empty-title">Nenhum download na fila</p>
+            <p className="empty-sub">Cole URLs acima para começar</p>
           </div>
         )}
       </div>
 
-      <footer>O download ocorre direto da plataforma para o seu dispositivo.</footer>
     </div>
   )
 }
 
-function FormatGroups({ formats, onSelect }) {
-  const withAudio    = formats.filter(f => f.audioStatus === 'yes')
-  const unknownAudio = formats.filter(f => f.audioStatus === 'unknown')
-  const noAudio      = formats.filter(f => f.audioStatus === 'no')
+// ─── Queue Item ───────────────────────────────────────────────────────────────
+
+function QueueItem({ item, displayName, onCancel, onShow }) {
+  const META = {
+    pending:     { icon: '⏳', cls: 'qi-pending'     },
+    downloading: { icon: '⬇',  cls: 'qi-downloading' },
+    done:        { icon: '✓',  cls: 'qi-done'        },
+    error:       { icon: '✕',  cls: 'qi-error'       },
+  }
+  const m = META[item.status] || META.pending
 
   return (
-    <div>
-      <div className="formats-label">Qualidades disponíveis</div>
-      <FormatSection formats={withAudio}    label="🔊 Com áudio"                       labelClass="has-audio"     onSelect={onSelect} />
-      <FormatSection formats={unknownAudio} label="❓ Áudio incerto — pode ter ou não" labelClass="unknown-audio" onSelect={onSelect} />
-      <FormatSection formats={noAudio}      label="🔇 Sem áudio (somente vídeo)"       labelClass="no-audio"      onSelect={onSelect} />
-    </div>
-  )
-}
+    <div className={`queue-item ${m.cls}`}>
+      <div className="qi-row">
+        <span className="qi-status-icon">{m.icon}</span>
 
-function FormatSection({ formats, label, labelClass, onSelect }) {
-  if (formats.length === 0) return null
-  return (
-    <div className="formats-section">
-      <div className={`formats-section-label ${labelClass}`}>{label}</div>
-      <div className="formats-grid">
-        {formats.map(f => (
-          <button
-            key={f.format_id}
-            className="fmt-btn"
-            onClick={() => onSelect(f.format_id, f.directLink)}
-          >
-            <span className="res">{f.height ? f.height + 'p' : (f.label || 'Original')}</span>
-            <span className="ext">{f.ext}</span>
-            {f.filesize && <span className="size">{fmtSize(f.filesize)}</span>}
-          </button>
-        ))}
+        <div className="qi-body">
+          <div className="qi-name">{displayName}</div>
+          <div className="qi-sub">
+            {item.status === 'downloading' && item.speed && (
+              <span>{item.speed} · ETA {item.eta}</span>
+            )}
+            {item.status === 'downloading' && !item.speed && (
+              <span>Iniciando…</span>
+            )}
+            {item.status === 'pending' && (
+              <span>Aguardando na fila</span>
+            )}
+            {item.status === 'done' && item.filePath && (
+              <span className="qi-filepath">{item.filePath.replace(/\\/g, '/').split('/').pop()}</span>
+            )}
+            {item.status === 'error' && (
+              <span className="qi-errmsg">{item.error}</span>
+            )}
+          </div>
+        </div>
+
+        <div className="qi-btns">
+          {item.status === 'done' && (
+            <button className="qi-btn qi-btn-open" onClick={onShow} title="Mostrar no Finder">
+              ↗
+            </button>
+          )}
+          {item.status !== 'done' && (
+            <button
+              className="qi-btn qi-btn-remove"
+              onClick={onCancel}
+              title={item.status === 'downloading' ? 'Cancelar' : 'Remover'}
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Progress bar */}
+      {(item.status === 'downloading' || item.status === 'done') && (
+        <div className="qi-progress-track">
+          <div className="qi-progress-fill" style={{ width: `${item.percent}%` }} />
+        </div>
+      )}
     </div>
   )
 }
