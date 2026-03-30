@@ -141,11 +141,14 @@ export default function App() {
   return (
     <div className="app">
 
-      {/* Header */}
-      <header className="app-header">
-        <h1>Video <span>Downloader</span></h1>
-        <p className="app-subtitle">YouTube · Instagram · TikTok · Facebook · X · Threads</p>
-      </header>
+      {/* Titlebar */}
+      <div className="titlebar">
+        <div className="titlebar-traffic" />
+        <span className="titlebar-title">Video <span>Downloader</span></span>
+        <div className="titlebar-drag-hint">
+          <span /><span /><span /><span /><span /><span />
+        </div>
+      </div>
 
       {/* Settings bar */}
       <div className="settings-bar">
