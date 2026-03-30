@@ -11,6 +11,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const cookiesFlag = process.platform === 'darwin' ? '--cookies-from-browser "chrome:Default"' : '';
 
 // Extrator para Threads usando Puppeteer (intercepta requisições de rede para encontrar o vídeo)
 async function extractThreads(url) {
@@ -127,7 +128,7 @@ app.post('/api/info', async (req, res) => {
   }
 
   // Demais plataformas: usa yt-dlp
-  exec(`yt-dlp --dump-json "${safeUrl}"`, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+  exec(`yt-dlp ${cookiesFlag} --dump-json "${safeUrl}"`, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
     if (err) {
       const raw = (stderr || err.message || '').trim();
       let msg = raw;
@@ -249,7 +250,7 @@ app.post('/api/get-link', async (req, res) => {
 
   const safeFormatId = String(format_id).replace(/[^a-zA-Z0-9_+\-]/g, '');
 
-  exec(`yt-dlp --get-url -f "${safeFormatId}" "${safeUrl}"`, (err, stdout, stderr) => {
+  exec(`yt-dlp ${cookiesFlag} --get-url -f "${safeFormatId}" "${safeUrl}"`, (err, stdout, stderr) => {
     if (err) {
       const msg = stderr || err.message || 'Erro ao obter link de download.';
       return res.status(500).json({ error: msg.trim() });
