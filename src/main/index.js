@@ -168,11 +168,107 @@ ipcMain.handle('dialog:choose-folder', async () => {
 
 // ─── IPC: Download ────────────────────────────────────────────────────────────
 
+// Formato: prioridade absoluta para áudio. Só cai em video-only como último recurso.
+function buildFormatStr(maxQuality) {
+  return [
+    `bestvideo[height<=${maxQuality}][ext=mp4]+bestaudio[ext=m4a]`, // mp4 + m4a (ideal)
+    `bestvideo[height<=${maxQuality}]+bestaudio`,                    // qualquer ext + áudio
+    `best[height<=${maxQuality}][acodec!=none]`,                     // combined com áudio
+    `best[acodec!=none]`,                                            // melhor com áudio (sem limite de altura)
+    `best[height<=${maxQuality}]`,                                   // fallback sem garantia de áudio
+    'best',                                                          // último recurso absoluto
+  ].join('/')
+}
+
+// Tenta um download com o outputTemplate dado.
+// Retorna: { status: 'done'|'conflict'|'cancelled'|'error', filePath?, title?, error? }
+function attemptDownload({ id, downloadUrl, formatStr, outputTemplate, send }) {
+  return new Promise((resolve) => {
+    const args = [
+      ...COOKIES_ARGS,
+      '-f', formatStr,
+      '--merge-output-format', 'mp4',
+      '--newline',
+      '--no-playlist',
+      '-o', outputTemplate,
+      downloadUrl,
+    ]
+
+    const proc = spawn(YT_DLP, args, { env: EXEC_ENV })
+    activeDownloads.set(id, proc)
+
+    let outFilePath = null
+    let title = null
+    let stderrBuf = ''
+    let conflictKill = false // true quando matamos o proc por conflito de arquivo
+
+    proc.stdout.on('data', (chunk) => {
+      for (const line of chunk.toString().split('\n')) {
+        // Arquivo já existe → conflito, mata o proc e tenta próximo sufixo
+        if (line.includes('has already been downloaded')) {
+          conflictKill = true
+          proc.kill('SIGTERM')
+          return
+        }
+
+        // Destination → extrai título do nome do arquivo
+        const dest = line.match(/\[download\] Destination:\s+(.+)/)
+        if (dest) {
+          outFilePath = dest[1].trim()
+          const fname = outFilePath.replace(/\\/g, '/').split('/').pop()
+          title = fname.replace(/\.[^.]+$/, '')
+          send('download:progress', { id, percent: 0, title, speed: '', eta: '' })
+        }
+
+        // Progresso: [download]  45.3% of 123.45MiB at 2.50MiB/s ETA 00:20
+        const prog = line.match(/\[download\]\s+([\d.]+)%\s+of\s+\S+\s+at\s+(\S+)\s+ETA\s+(\S+)/)
+        if (prog) {
+          send('download:progress', { id, percent: parseFloat(prog[1]), speed: prog[2], eta: prog[3], title })
+        }
+
+        // Merger → caminho final do arquivo mesclado
+        const merge = line.match(/Merging formats into "(.+)"/)
+        if (merge) outFilePath = merge[1].trim()
+      }
+    })
+
+    proc.stderr.on('data', (chunk) => { stderrBuf += chunk.toString() })
+
+    proc.on('close', (code, signal) => {
+      activeDownloads.delete(id)
+
+      if (conflictKill) {
+        resolve({ status: 'conflict' })
+        return
+      }
+
+      // Morto por sinal externo (cancelamento do usuário)
+      if (signal === 'SIGTERM' || signal === 'SIGKILL') {
+        resolve({ status: 'cancelled' })
+        return
+      }
+
+      if (code === 0) {
+        resolve({ status: 'done', filePath: outFilePath, title })
+      } else {
+        const lines = stderrBuf.trim().split('\n').filter(Boolean)
+        const errMsg = lines.find(l => l.includes('ERROR:'))?.replace(/^.*ERROR:\s*/, '') || 'Erro no download.'
+        resolve({ status: 'error', error: errMsg })
+      }
+    })
+
+    proc.on('error', (err) => {
+      activeDownloads.delete(id)
+      resolve({ status: 'error', error: err.message })
+    })
+  })
+}
+
 ipcMain.handle('download:video', async (event, { id, url, maxQuality, folder }) => {
   const safeUrl = url.trim()
   let downloadUrl = safeUrl
 
-  // Threads: extract direct URL via Puppeteer
+  // Threads: extrai URL direta via Puppeteer
   if (isThreadsUrl(safeUrl)) {
     try {
       downloadUrl = await extractThreadsUrl(safeUrl)
@@ -182,85 +278,35 @@ ipcMain.handle('download:video', async (event, { id, url, maxQuality, folder }) 
     }
   }
 
-  // Format: best video up to maxQuality + audio, fallback to best available
-  const formatStr = [
-    `bestvideo[height<=${maxQuality}][ext=mp4]+bestaudio[ext=m4a]`,
-    `bestvideo[height<=${maxQuality}]+bestaudio`,
-    `best[height<=${maxQuality}]`,
-    'best',
-  ].join('/')
+  const formatStr = buildFormatStr(maxQuality)
+  const send = (channel, data) => { try { event.sender.send(channel, data) } catch {} }
 
-  const args = [
-    ...COOKIES_ARGS,
-    '-f', formatStr,
-    '--merge-output-format', 'mp4',
-    '--newline',
-    '--no-playlist',
-    '-o', join(folder, '%(title)s.%(ext)s'),
-    downloadUrl,
-  ]
+  // Loop de auto-renomeação: tenta "Título.mp4", "Título (1).mp4", "Título (2).mp4"...
+  for (let attempt = 0; attempt <= 99; attempt++) {
+    const suffix = attempt === 0 ? '' : ` (${attempt})`
+    const outputTemplate = join(folder, `%(title)s${suffix}.%(ext)s`)
 
-  return new Promise((resolve) => {
-    const proc = spawn(YT_DLP, args, { env: EXEC_ENV })
-    activeDownloads.set(id, proc)
+    const result = await attemptDownload({ id, downloadUrl, formatStr, outputTemplate, send })
 
-    let outFilePath = null
-    let title = null
-    let stderrBuf = ''
+    if (result.status === 'conflict') continue  // arquivo existe → tenta próximo sufixo
 
-    const send = (channel, data) => {
-      try { event.sender.send(channel, data) } catch {}
+    if (result.status === 'done') {
+      send('download:done', { id, filePath: result.filePath, title: result.title })
+      return { success: true }
     }
 
-    proc.stdout.on('data', (chunk) => {
-      for (const line of chunk.toString().split('\n')) {
-        // Destination line → extract title
-        const dest = line.match(/\[download\] Destination:\s+(.+)/)
-        if (dest) {
-          outFilePath = dest[1].trim()
-          const fname = outFilePath.replace(/\\/g, '/').split('/').pop()
-          title = fname.replace(/\.[^.]+$/, '')
-          send('download:progress', { id, percent: 0, title, speed: '', eta: '' })
-        }
+    if (result.status === 'cancelled') {
+      send('download:error', { id, error: 'Cancelado.' })
+      return { success: false }
+    }
 
-        // Progress line: [download]  45.3% of 123.45MiB at 2.50MiB/s ETA 00:20
-        const prog = line.match(/\[download\]\s+([\d.]+)%\s+of\s+\S+\s+at\s+(\S+)\s+ETA\s+(\S+)/)
-        if (prog) {
-          send('download:progress', {
-            id,
-            percent: parseFloat(prog[1]),
-            speed: prog[2],
-            eta: prog[3],
-            title,
-          })
-        }
+    // error
+    send('download:error', { id, error: result.error })
+    return { success: false }
+  }
 
-        // Merger line → final merged file path
-        const merge = line.match(/Merging formats into "(.+)"/)
-        if (merge) outFilePath = merge[1].trim()
-      }
-    })
-
-    proc.stderr.on('data', (chunk) => { stderrBuf += chunk.toString() })
-
-    proc.on('close', (code) => {
-      activeDownloads.delete(id)
-      if (code === 0) {
-        send('download:done', { id, filePath: outFilePath, title })
-      } else {
-        const lines = stderrBuf.trim().split('\n').filter(Boolean)
-        const errMsg = lines.find(l => l.includes('ERROR:'))?.replace(/^.*ERROR:\s*/, '') || 'Erro no download.'
-        send('download:error', { id, error: errMsg })
-      }
-      resolve({ success: code === 0 })
-    })
-
-    proc.on('error', (err) => {
-      activeDownloads.delete(id)
-      send('download:error', { id, error: err.message })
-      resolve({ success: false })
-    })
-  })
+  send('download:error', { id, error: 'Não foi possível encontrar um nome disponível.' })
+  return { success: false }
 })
 
 ipcMain.handle('download:cancel', (_, id) => {
