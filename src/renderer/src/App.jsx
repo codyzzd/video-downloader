@@ -15,12 +15,14 @@ export default function App() {
   const [linkLoading, setLinkLoading] = useState(false)
   const [link, setLink] = useState('')
   const [copied, setCopied] = useState(false)
+  const [mergeState, setMergeState] = useState(null) // null | 'downloading' | { filePath } | { error }
 
   async function analyze() {
     if (!url.trim()) return
     setError('')
     setResult(null)
     setLink('')
+    setMergeState(null)
     setLoading(true)
     try {
       const data = await window.api.getInfo(url.trim())
@@ -35,6 +37,24 @@ export default function App() {
   async function selectFormat(formatId, directLink) {
     setError('')
     setLink('')
+    setMergeState(null)
+
+    // Formato mesclado: baixa direto para o disco via yt-dlp
+    if (formatId === '__merged__') {
+      setMergeState('downloading')
+      try {
+        const res = await window.api.downloadMerged(url.trim())
+        if (res?.cancelled) {
+          setMergeState(null)
+        } else {
+          setMergeState({ filePath: res.filePath })
+        }
+      } catch (e) {
+        setMergeState({ error: e.message || 'Erro ao baixar vídeo.' })
+      }
+      return
+    }
+
     if (directLink) {
       setLink(directLink)
       return
@@ -112,6 +132,34 @@ export default function App() {
                 <div className="toast-spinner" />
                 <span>Obtendo link de download...</span>
               </div>
+            )}
+
+            {mergeState === 'downloading' && (
+              <div className="toast">
+                <div className="toast-spinner" />
+                <span>Baixando vídeo com áudio… pode demorar alguns segundos.</span>
+              </div>
+            )}
+
+            {mergeState?.filePath && (
+              <div className="link-panel">
+                <div className="link-panel-title">Download concluído</div>
+                <div className="link-panel-actions">
+                  <button
+                    className="btn-action btn-open"
+                    onClick={() => window.api.openExternal('file://' + mergeState.filePath.replace(/\\/g, '/'))}
+                  >
+                    ▶ Abrir arquivo
+                  </button>
+                </div>
+                <div className="link-row">
+                  <div className="link-text">{mergeState.filePath}</div>
+                </div>
+              </div>
+            )}
+
+            {mergeState?.error && (
+              <div className="error-box">{mergeState.error}</div>
             )}
 
             {link && (

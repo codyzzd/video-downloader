@@ -1,9 +1,16 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { join } from 'path'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 
 const execAsync = promisify(exec)
+
+// Cookies do Chrome para plataformas que exigem login (ex: Instagram)
+const COOKIES_FLAG = process.platform === 'darwin'
+  ? '--cookies-from-browser "chrome:Default"'
+  : process.platform === 'win32'
+    ? '--cookies-from-browser chrome'
+    : ''
 
 // Quando empacotado, usa o binário bundlado em Resources/bin/yt-dlp.
 // Em dev, cai no yt-dlp do sistema (precisa estar no PATH).
@@ -182,7 +189,7 @@ ipcMain.handle('api:get-info', async (_, url) => {
 
   let stdout, stderr
   try {
-    ;({ stdout, stderr } = await execAsync(`"${YT_DLP}" --dump-json "${safeUrl}"`, { maxBuffer: 10 * 1024 * 1024, env: EXEC_ENV }))
+    ;({ stdout, stderr } = await execAsync(`"${YT_DLP}" ${COOKIES_FLAG} --dump-json "${safeUrl}"`, { maxBuffer: 10 * 1024 * 1024, env: EXEC_ENV }))
   } catch (err) {
     const raw = (err.stderr || err.message || '').trim()
     let msg = raw
@@ -263,6 +270,24 @@ ipcMain.handle('api:get-info', async (_, url) => {
     throw new Error('Nenhum formato de vídeo disponível para esta URL.')
   }
 
+  // Se há formatos sem áudio (DASH), oferece opção de download mesclado (vídeo+áudio)
+  const hasDashVideoOnly = formats.some(f => f.hasVideo && f.audioStatus === 'no')
+  if (hasDashVideoOnly) {
+    const maxHeight = Math.max(...formats.filter(f => f.height).map(f => f.height), 0) || null
+    formats.unshift({
+      format_id: '__merged__',
+      height: maxHeight,
+      ext: 'mp4',
+      filesize: null,
+      tbr: null,
+      audioStatus: 'yes',
+      hasAudio: true,
+      hasVideo: true,
+      label: 'Melhor qualidade',
+      isMerged: true,
+    })
+  }
+
   return { title, thumbnail, formats }
 })
 
@@ -280,7 +305,7 @@ ipcMain.handle('api:get-link', async (_, url, formatId) => {
 
   let stdout
   try {
-    ;({ stdout } = await execAsync(`"${YT_DLP}" --get-url -f "${safeFormatId}" "${safeUrl}"`, { env: EXEC_ENV }))
+    ;({ stdout } = await execAsync(`"${YT_DLP}" ${COOKIES_FLAG} --get-url -f "${safeFormatId}" "${safeUrl}"`, { env: EXEC_ENV }))
   } catch (err) {
     throw new Error((err.stderr || err.message || 'Erro ao obter link de download.').trim())
   }
@@ -289,6 +314,29 @@ ipcMain.handle('api:get-link', async (_, url, formatId) => {
   if (!link) throw new Error('Link direto não encontrado para este formato.')
 
   return { link }
+})
+
+// ─── IPC: download:merged — baixa vídeo+áudio mesclados via yt-dlp ──────────
+
+ipcMain.handle('download:merged', async (_, url) => {
+  const safeUrl = url.trim()
+
+  const { filePath } = await dialog.showSaveDialog({
+    title: 'Salvar vídeo',
+    defaultPath: join(app.getPath('downloads'), 'video.mp4'),
+    filters: [{ name: 'Vídeo MP4', extensions: ['mp4'] }],
+  })
+
+  if (!filePath) return { cancelled: true }
+
+  await execAsync(
+    `"${YT_DLP}" ${COOKIES_FLAG} -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best" --merge-output-format mp4 -o "${filePath}" "${safeUrl}"`,
+    { env: EXEC_ENV, maxBuffer: 10 * 1024 * 1024 }
+  ).catch(err => {
+    throw new Error((err.stderr || err.message || 'Erro ao baixar vídeo.').trim())
+  })
+
+  return { success: true, filePath }
 })
 
 // ─── IPC: utilitários ─────────────────────────────────────────────────────────

@@ -5,4 +5,5 @@ contextBridge.exposeInMainWorld('api', {
   getLink: (url, formatId) => ipcRenderer.invoke('api:get-link', url, formatId),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   downloadStart: (url) => ipcRenderer.invoke('download:start', url),
+  downloadMerged: (url) => ipcRenderer.invoke('download:merged', url),
 })
