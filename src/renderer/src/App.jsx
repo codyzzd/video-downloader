@@ -49,6 +49,23 @@ export default function App() {
     return () => window.api.offDownloadEvents()
   }, [])
 
+  // ── Badge da Dock ─────────────────────────────────────────────────────────
+
+  const prevActiveRef = useRef(0)
+
+  useEffect(() => {
+    const active = queue.filter(i => i.status === 'pending' || i.status === 'downloading').length
+    const finished = queue.filter(i => i.status === 'done' || i.status === 'error').length
+
+    window.api.setBadge(active)
+
+    // Bounce quando todos terminam (transição de algum ativo → zero ativo)
+    if (prevActiveRef.current > 0 && active === 0 && finished > 0) {
+      window.api.bounceDock()
+    }
+    prevActiveRef.current = active
+  }, [queue])
+
   // ── Queue processor (1 download at a time) ────────────────────────────────
 
   useEffect(() => {
@@ -135,6 +152,9 @@ export default function App() {
     done:        queue.filter(i => i.status === 'done').length,
     error:       queue.filter(i => i.status === 'error').length,
   }
+  const totalActive  = stats.pending + stats.downloading
+  const totalDone    = stats.done + stats.error
+  const showProgress = queue.length > 0
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -203,6 +223,28 @@ export default function App() {
           <>
             <div className="queue-header">
               <span className="queue-label">Fila</span>
+
+              {showProgress && (
+                <div className="queue-progress-summary">
+                  {totalActive > 0 ? (
+                    <>
+                      <span className="qps-fraction">
+                        {totalDone} <span className="qps-sep">de</span> {queue.length}
+                      </span>
+                      <div className="qps-bar">
+                        <div
+                          className="qps-bar-fill"
+                          style={{ width: `${(totalDone / queue.length) * 100}%` }}
+                        />
+                      </div>
+                      <span className="qps-label">baixados</span>
+                    </>
+                  ) : (
+                    <span className="qps-done">✓ Todos concluídos</span>
+                  )}
+                </div>
+              )}
+
               <div className="queue-stats">
                 {stats.downloading > 0 && <span className="stat stat-active">⬇ {stats.downloading}</span>}
                 {stats.pending > 0     && <span className="stat stat-pending">⏳ {stats.pending}</span>}

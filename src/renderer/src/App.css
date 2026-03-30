@@ -244,9 +244,59 @@ body {
   text-transform: uppercase;
 }
 
+.queue-progress-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  margin: 0 12px;
+}
+
+.qps-fraction {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.qps-sep {
+  font-weight: 400;
+  color: var(--muted);
+  margin: 0 1px;
+}
+
+.qps-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  min-width: 40px;
+}
+
+.qps-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.qps-label {
+  font-size: 0.7rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.qps-done {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--success);
+}
+
 .queue-stats {
   display: flex;
   gap: 6px;
+  flex-shrink: 0;
 }
 
 .stat {

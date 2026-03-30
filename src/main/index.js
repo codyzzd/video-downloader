@@ -149,6 +149,7 @@ app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) creat
 app.on('before-quit', () => {
   for (const [, proc] of activeDownloads) proc.kill()
   activeDownloads.clear()
+  if (app.setBadgeCount) app.setBadgeCount(0)
 })
 
 // ─── IPC: Settings ────────────────────────────────────────────────────────────
@@ -313,6 +314,16 @@ ipcMain.handle('download:cancel', (_, id) => {
   const proc = activeDownloads.get(id)
   if (proc) { proc.kill(); activeDownloads.delete(id) }
   return true
+})
+
+// ─── IPC: Dock / Badge ────────────────────────────────────────────────────────
+
+ipcMain.handle('badge:set', (_, count) => {
+  if (app.setBadgeCount) app.setBadgeCount(count)
+})
+
+ipcMain.handle('badge:bounce', () => {
+  if (app.dock) app.dock.bounce('informational')
 })
 
 // ─── IPC: Shell ───────────────────────────────────────────────────────────────

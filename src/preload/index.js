@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.removeAllListeners('download:error')
   },
 
+  // Dock
+  setBadge:     (count) => ipcRenderer.invoke('badge:set', count),
+  bounceDock:   ()      => ipcRenderer.invoke('badge:bounce'),
+
   // Shell
   showInFolder:  (path) => ipcRenderer.invoke('shell:show-in-folder', path),
   openExternal:  (url)  => ipcRenderer.invoke('shell:open-external', url),
